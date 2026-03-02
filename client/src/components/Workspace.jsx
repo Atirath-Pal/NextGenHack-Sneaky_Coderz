@@ -2,6 +2,7 @@ import React, { useMemo, useState, useEffect, useRef } from 'react';
 import { Editor } from '@monaco-editor/react';
 import ReactMarkdown from 'react-markdown';
 import { API_BASE } from '../config/api';
+import supabase from '../supabaseClient'; // Make sure this path is correct!
 
 const DEFAULT_LANG = 'javascript';
 
@@ -9,6 +10,9 @@ export default function Workspace({ problem }) {
   const [language, setLanguage] = useState(DEFAULT_LANG);
   const [codeCache, setCodeCache] = useState({});
   const [descriptionWidth, setDescriptionWidth] = useState(50);
+  
+  // ✨ NEW: State to hold real test cases from Supabase
+  const [dbTestCases, setDbTestCases] = useState([]);
 
   // Terminal State
   const [outputHeight, setOutputHeight] = useState(200);
@@ -39,6 +43,29 @@ export default function Workspace({ problem }) {
   }, [problem]);
 
   const languages = useMemo(() => problem?.code_snippets ? Object.keys(problem.code_snippets) : [], [problem]);
+
+  // ✨ NEW: Fetch Test Cases when problem loads
+  useEffect(() => {
+    const fetchTestCases = async () => {
+      if (!problem?.id) return;
+      try {
+        const { data, error } = await supabase
+          .from('test_cases')
+          .select('*')
+          .eq('problem_id', problem.id);
+        
+        if (!error && data) {
+          setDbTestCases(data);
+        }
+      } catch (err) {
+        console.error("Failed to fetch test cases", err);
+      }
+    };
+
+    if (problem) {
+      fetchTestCases();
+    }
+  }, [problem]);
 
   useEffect(() => {
     if (!problem?.code_snippets) return;
@@ -94,6 +121,10 @@ export default function Workspace({ problem }) {
     setRunStatus("running");
     setExecutionResult({ loading: true });
     setIsOutputCollapsed(false);
+    
+    // Auto-switch to testcase tab to show the evaluation happening!
+    setActiveTerminalTab("testcase"); 
+
     try {
       const response = await fetch(`${API_BASE}/api/execute`, {
         method: 'POST',
@@ -109,7 +140,7 @@ export default function Workspace({ problem }) {
     }
   };
 
-  // ✨ STANDARD AI ACTION: For guidance and hints
+  // ✨ STANDARD AI ACTION
   const handleAskAI = async (useCustomPrompt = false) => {
     setAiFlowStatus('loading');
     setAiHint('');
@@ -149,7 +180,6 @@ export default function Workspace({ problem }) {
     setAiFlowStatus('loading');
     setAiHint('');
     
-    // The secret prompt we send to Gemini to force a code review
     const analysisPrompt = "Please act as a senior developer and review my current code. Do not solve the problem for me. Instead, provide a structured 'Code Quality Report' containing: 1. The estimated Time Complexity (Big O). 2. The estimated Space Complexity (Big O). 3. Two specific suggestions to make my code cleaner, more readable, or more efficient.";
 
     try {
@@ -199,7 +229,6 @@ export default function Workspace({ problem }) {
           <select value={language} onChange={(e) => setLanguage(e.target.value)} className="bg-[#0d1117] border border-gray-700 rounded px-2 py-1 text-xs outline-none focus:border-blue-500">
             {languages.map(lang => <option key={lang} value={lang}>{lang}</option>)}
           </select>
-          {/* ✨ NEW ANALYZE BUTTON */}
           <button onClick={handleAnalyzeCode} className="bg-emerald-700 hover:bg-emerald-600 px-4 py-1.5 rounded-md text-sm font-bold transition flex items-center gap-1">
             <span>📊</span> Analyze Code
           </button>
@@ -222,7 +251,6 @@ export default function Workspace({ problem }) {
                 <button onClick={() => setAiFlowStatus('none')} className="text-indigo-400 hover:text-white font-bold text-lg leading-none">✕</button>
               </div>
 
-              {/* STAGE 1: Asking */}
               {aiFlowStatus === 'asking' && (
                 <div className="space-y-4 animate-in fade-in duration-300">
                   <p className="text-sm text-gray-300">Do you want to add a specific prompt or question about your code?</p>
@@ -233,7 +261,6 @@ export default function Workspace({ problem }) {
                 </div>
               )}
 
-              {/* STAGE 2: Typing */}
               {aiFlowStatus === 'typing' && (
                 <div className="space-y-3 animate-in fade-in duration-300">
                   <textarea 
@@ -250,7 +277,6 @@ export default function Workspace({ problem }) {
                 </div>
               )}
 
-              {/* STAGE 3: Loading */}
               {aiFlowStatus === 'loading' && (
                 <div className="flex flex-col items-center justify-center py-6 space-y-4 animate-in fade-in duration-300">
                   <div className="w-8 h-8 border-4 border-indigo-500 border-t-transparent rounded-full animate-spin"></div>
@@ -258,7 +284,6 @@ export default function Workspace({ problem }) {
                 </div>
               )}
 
-              {/* STAGE 4: Result */}
               {aiFlowStatus === 'result' && aiHint && (
                 <div className="animate-in fade-in duration-500">
                   <div className="p-4 bg-[#0d1117] border border-indigo-500/20 rounded-lg text-sm text-gray-200 shadow-inner">
@@ -327,18 +352,61 @@ export default function Workspace({ problem }) {
                 executionResult?.error ? <pre className="text-red-400 whitespace-pre-wrap">{executionResult.error}</pre> :
                 <span className="text-gray-600 italic">Run your code to see output here.</span>
               ) : (
-                /* ✨ NEW: Renders the Test Cases inside the terminal tab! */
+                /* ✨ NEW: Auto-Evaluator Test Case Tab! */
                 <div className="space-y-4">
-                  <h4 className="text-gray-400 text-xs font-bold mb-2">AVAILABLE TEST CASES</h4>
-                  {parsedExamples.length > 0 ? (
-                    parsedExamples.map((ex, i) => (
-                      <div key={i} className="bg-[#1e1e1e] p-4 rounded-md border border-gray-700 font-mono text-xs shadow-inner">
-                        <div className="text-blue-400 mb-2 uppercase font-bold tracking-wider">Test Case {ex.example_num || i+1}</div>
-                        <div className="text-gray-300 whitespace-pre-wrap">{ex.example_text}</div>
-                      </div>
-                    ))
+                  <h4 className="text-gray-400 text-xs font-bold mb-2">DATABASE TEST CASES</h4>
+                  
+                  {executionResult?.loading && (
+                     <div className="text-yellow-500 text-xs mb-4 animate-pulse">Evaluating test cases against your code...</div>
+                  )}
+
+                  {dbTestCases.length > 0 ? (
+                    dbTestCases.map((tc, i) => {
+                      // Hackathon Magic: We compare JDoodle's terminal output to the expected DB output
+                      const expectedStr = typeof tc.expected_output === 'object' ? JSON.stringify(tc.expected_output) : String(tc.expected_output);
+                      
+                      let isPass = null;
+                      if (executionResult?.success) {
+                        const outStr = executionResult.output || "";
+                        const cleanOut = outStr.replace(/\s/g, '');
+                        const cleanExp = expectedStr.replace(/\s/g, '');
+                        
+                        // If the terminal output includes the expected answer, it's a pass!
+                        if (cleanOut.includes(cleanExp)) {
+                          isPass = true;
+                        } else {
+                          isPass = false;
+                        }
+                      } else if (executionResult?.error) {
+                        isPass = false;
+                      }
+
+                      return (
+                        <div key={i} className="bg-[#1e1e1e] p-4 rounded-md border border-gray-700 font-mono text-xs shadow-inner">
+                          <div className="flex justify-between items-center mb-2">
+                            <div className="text-blue-400 uppercase font-bold tracking-wider">Test Case {i+1}</div>
+                            
+                            {/* Pass/Fail Badge */}
+                            {executionResult && !executionResult.loading && (
+                              <div className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase ${isPass ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'}`}>
+                                {isPass ? '✅ Passed' : '❌ Failed'}
+                              </div>
+                            )}
+                          </div>
+                          <div className="text-gray-300 whitespace-pre-wrap"><span className="text-gray-500">Input:</span> {JSON.stringify(tc.input)}</div>
+                          <div className="text-gray-300 whitespace-pre-wrap mt-1"><span className="text-gray-500">Expected:</span> {expectedStr}</div>
+                          
+                          {/* Show the actual output if they ran the code */}
+                          {executionResult && !executionResult.loading && i === 0 && (
+                            <div className={`whitespace-pre-wrap mt-3 pt-3 border-t border-gray-700 ${isPass ? 'text-green-400' : 'text-red-400'}`}>
+                              <span className="text-gray-500">Actual Output:</span> {executionResult.output || "Error compiling code"}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })
                   ) : (
-                    <span className="text-gray-600 italic">No test cases found.</span>
+                    <span className="text-gray-600 italic">No test cases found in database.</span>
                   )}
                 </div>
               )}
