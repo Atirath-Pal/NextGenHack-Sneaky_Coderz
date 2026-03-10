@@ -19,17 +19,21 @@ function ChevronRightIcon({ className = '' }) {
 }
 
 export default function App() {
-  const [problems, setProblems] = useState([]);
-  const [loading, setLoading] = useState(true); // Sidebar/List loading
-  const [problemLoading, setProblemLoading] = useState(false); // Workspace content loading
-  const [authLoading, setAuthLoading] = useState(true);
-  const [user, setUser] = useState(null);
-  const [error, setError] = useState(null);
+  const [problems, setProblems]           = useState([]);
+  const [loading, setLoading]             = useState(true);
+  const [problemLoading, setProblemLoading] = useState(false);
+  const [authLoading, setAuthLoading]     = useState(true);
+  const [user, setUser]                   = useState(null);
+  const [error, setError]                 = useState(null);
   const [selectedTopic, setSelectedTopic] = useState(null);
-  const [searchQuery, setSearchQuery] = useState('');
+  const [searchQuery, setSearchQuery]     = useState('');
   const [selectedProblem, setSelectedProblem] = useState(null);
-  const [dashboardWidth, setDashboardWidth] = useState(40);
+  const [dashboardWidth, setDashboardWidth]   = useState(40);
   const [showProblemList, setShowProblemList] = useState(true);
+
+  // Profile page has its own topic/search state so it doesn't clash with dashboard
+  const [profileTopic, setProfileTopic]       = useState(null);
+  const [profileSearchQuery, setProfileSearchQuery] = useState('');
 
   const mainRef = useRef(null);
 
@@ -39,20 +43,17 @@ export default function App() {
       setUser(session?.user ?? null);
       setAuthLoading(false);
     });
-
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
       setUser(session?.user ?? null);
     });
-
     return () => subscription.unsubscribe();
   }, []);
 
-  // 2. Optimized Initial Load: Fetch only list metadata
+  // 2. Fetch problem list metadata (shared between dashboard + profile)
   useEffect(() => {
     let cancelled = false;
     async function load() {
       try {
-        // Suggestion: Update your backend to support a "shallow" query if possible
         const res = await axios.get(`${API_BASE}/api/problems?select=id,title,slug,difficulty,topics`);
         if (!cancelled) {
           setProblems(res.data || []);
@@ -69,23 +70,34 @@ export default function App() {
     return () => { cancelled = true; };
   }, []);
 
-  // 3. Lazy Load Problem Details
+  // 3. Lazy-load full problem details when selected from dashboard
   const handleSelectProblem = async (problemSummary) => {
-    // If we click the same problem, don't re-fetch
     if (selectedProblem?.slug === problemSummary.slug) return;
-
     try {
       setProblemLoading(true);
       const res = await axios.get(`${API_BASE}/api/problems/${problemSummary.slug}`);
       setSelectedProblem(res.data);
     } catch (err) {
-      console.error("❌ Failed to load problem details:", err);
-      setError("Could not load problem details.");
+      console.error('Failed to load problem details:', err);
+      setError('Could not load problem details.');
     } finally {
       setProblemLoading(false);
     }
   };
 
+  // 4. Profile page: navigate to /dashboard when a problem is clicked
+  // (opens the IDE with that problem pre-selected)
+  const handleProfileSelectProblem = async (problemSummary) => {
+    try {
+      const res = await axios.get(`${API_BASE}/api/problems/${problemSummary.slug}`);
+      setSelectedProblem(res.data);
+      // navigation happens via the <Navigate> below — we just pre-load the problem
+    } catch (err) {
+      console.error('Failed to load problem from profile:', err);
+    }
+  };
+
+  // 5. Resizable divider
   const handleOuterDividerMouseDown = (e) => {
     e.preventDefault();
     const container = mainRef.current;
@@ -108,7 +120,7 @@ export default function App() {
   if (authLoading) {
     return (
       <div className="h-screen bg-background flex flex-col items-center justify-center gap-4">
-        <div className="w-12 h-12 border-4 border-blue-600 border-t-transparent rounded-full animate-spin"></div>
+        <div className="w-12 h-12 border-4 border-blue-600 border-t-transparent rounded-full animate-spin" />
         <p className="text-gray-400 font-medium animate-pulse">Checking Session...</p>
       </div>
     );
@@ -118,9 +130,11 @@ export default function App() {
     <Router>
       <Navbar />
       <Routes>
+        {/* ── Public ── */}
         <Route path="/" element={<Welcome />} />
         <Route path="/login" element={!user ? <Login /> : <Navigate to="/dashboard" />} />
 
+        {/* ── Dashboard (IDE view) ── */}
         <Route path="/dashboard" element={
           user ? (
             <div className="h-[calc(100vh-64px)] flex flex-col bg-background text-gray-100 overflow-hidden">
@@ -131,10 +145,13 @@ export default function App() {
               )}
 
               <main ref={mainRef} className="flex-1 flex overflow-hidden">
-                {/* Sidebar Section */}
+                {/* Problem list sidebar */}
                 {showProblemList ? (
                   <>
-                    <div className="h-full border-r border-gray-900 flex flex-col bg-panel" style={{ width: `${dashboardWidth}%` }}>
+                    <div
+                      className="h-full border-r border-gray-900 flex flex-col bg-panel"
+                      style={{ width: `${dashboardWidth}%` }}
+                    >
                       <ProblemDashboard
                         problems={problems}
                         selectedTopic={selectedTopic}
@@ -147,7 +164,10 @@ export default function App() {
                         isLoading={loading}
                       />
                     </div>
-                    <div className="w-1 bg-gray-800 hover:bg-blue-600 cursor-col-resize transition-colors" onMouseDown={handleOuterDividerMouseDown} />
+                    <div
+                      className="w-1 bg-gray-800 hover:bg-blue-600 cursor-col-resize transition-colors"
+                      onMouseDown={handleOuterDividerMouseDown}
+                    />
                   </>
                 ) : (
                   <div className="w-10 border-r border-gray-900 flex justify-center items-start pt-3 bg-background">
@@ -161,14 +181,14 @@ export default function App() {
                   </div>
                 )}
 
-                {/* Workspace Section */}
+                {/* Workspace / IDE */}
                 <div className="flex-1 flex flex-col bg-background relative">
                   {problemLoading && (
                     <div className="absolute inset-0 z-10 bg-background/60 backdrop-blur-sm flex items-center justify-center">
-                       <div className="flex flex-col items-center gap-2">
-                          <div className="w-8 h-8 border-2 border-blue-500 border-t-transparent rounded-full animate-spin"></div>
-                          <span className="text-xs text-gray-400">Loading Problem...</span>
-                       </div>
+                      <div className="flex flex-col items-center gap-2">
+                        <div className="w-8 h-8 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
+                        <span className="text-xs text-gray-400">Loading Problem...</span>
+                      </div>
                     </div>
                   )}
                   <Workspace
@@ -181,7 +201,24 @@ export default function App() {
           ) : <Navigate to="/login" />
         } />
 
-        <Route path="/profile" element={user ? <Profile /> : <Navigate to="/login" />} />
+        {/* ── Profile (3-panel: Topics | Problems | Profile+Roadmap) ── */}
+        <Route path="/profile" element={
+          user ? (
+            <Profile
+              // Problem browser props — uses its own isolated state so it
+              // doesn't affect the dashboard's selected topic/search
+              problems={problems}
+              selectedTopic={profileTopic}
+              onSelectTopic={setProfileTopic}
+              searchQuery={profileSearchQuery}
+              onSearchQueryChange={setProfileSearchQuery}
+              // Clicking a problem on the profile page pre-loads it so
+              // navigating to /dashboard opens it immediately
+              onSelectProblem={handleProfileSelectProblem}
+              selectedSlug={selectedProblem?.slug}
+            />
+          ) : <Navigate to="/login" />
+        } />
       </Routes>
     </Router>
   );
