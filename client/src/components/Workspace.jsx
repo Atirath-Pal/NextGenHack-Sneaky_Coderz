@@ -25,6 +25,10 @@ export default function Workspace({ problem }) {
   const [executionResult, setExecutionResult] = useState(null);
   const [runStatus, setRunStatus] = useState(null);
 
+  // ✨ NEW: PROACTIVE AI STATE
+  const [showProactiveHelp, setShowProactiveHelp] = useState(false);
+  const typingTimeoutRef = useRef(null);
+
   const containerRef = useRef(null);
   const editorRef = useRef(null);
 
@@ -72,7 +76,28 @@ export default function Workspace({ problem }) {
     setAiHint(''); 
     setUserPrompt(''); 
     setAiFlowStatus('none');
-  }, [problem]);
+    setShowProactiveHelp(false); // Reset popup on problem change
+  }, [problem, languages, language]);
+
+  // ✨ NEW: IDLE DETECTION TIMER
+  useEffect(() => {
+    // 1. Hide the popup immediately when they start typing
+    setShowProactiveHelp(false);
+    
+    // 2. Clear the old timer
+    if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
+
+    // 3. Start a new timer for 10 seconds (10000 ms)
+    typingTimeoutRef.current = setTimeout(() => {
+      // Only show popup if they actually have some code written
+      if (codeCache[language] && codeCache[language].trim().length > 5) {
+        setShowProactiveHelp(true);
+      }
+    }, 10000); 
+
+    // Cleanup timer on unmount
+    return () => clearTimeout(typingTimeoutRef.current);
+  }, [codeCache, language]);
 
   // --- RESIZE HANDLERS ---
   const handleInnerDividerMouseDown = (e) => {
@@ -109,35 +134,11 @@ export default function Workspace({ problem }) {
   };
 
   // --- ✨ SCORE UPDATING LOGIC ---
-  // const incrementUserScore = async () => {
-  //   try {
-  //     const { data: { user } } = await supabase.auth.getUser();
-  //     if (!user) return;
-
-  //     const { data: profileData, error: fetchError } = await supabase
-  //       .from('profiles')
-  //       .select('rank_score')
-  //       .eq('id', user.id)
-  //       .single();
-
-  //     if (fetchError) return;
-
-  //     const newScore = (profileData.rank_score || 0) + 1;
-  //     await supabase
-  //       .from('profiles')
-  //       .update({ rank_score: newScore }) 
-  //       .eq('id', user.id);
-  //   } catch (err) {
-  //     console.error("Auth error:", err);
-  //   }
-  // };
- const incrementUserScore = async () => {
+  const incrementUserScore = async () => {
     try {
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) return;
 
-      // 1. Check if this is the first time the user is solving this specific problem
-      // We check for "Accepted" status (Capital 'A' to match recordSubmission)
       const { count, error: countError } = await supabase
         .from('submissions')
         .select('*', { count: 'exact', head: true })
@@ -147,8 +148,6 @@ export default function Workspace({ problem }) {
 
       if (countError) throw countError;
 
-      // 2. Only increment if there is exactly 1 "Accepted" record (the one we just created)
-      // If count is greater than 1, they have solved it before.
       if (count === 1) {
         const { data: profileData, error: fetchError } = await supabase
           .from('profiles')
@@ -173,29 +172,7 @@ export default function Workspace({ problem }) {
   };
 
   // --- ✨ NEW: SUBMISSION RECORDING LOGIC ---
-  // const recordSubmission = async (status, executionData) => {
-  //   try {
-  //     const { data: { user } } = await supabase.auth.getUser();
-  //     if (!user) return;
-
-  //     const { error } = await supabase
-  //       .from('submissions')
-  //       .insert([{
-  //         user_id: user.id,
-  //         problem_id: problem.id,
-  //         status: status, // "Accepted" or "Wrong Answer" or "Error"
-  //         code: codeCache[language],
-  //         language: language,
-  //         execution_time: executionData?.cpuTime || 0,
-  //         memory_usage: executionData?.memory || 0
-  //       }]);
-
-  //     if (error) console.error("Failed to record submission:", error.message);
-  //   } catch (err) {
-  //     console.error("Submission error:", err);
-  //   }
-  // };
- const recordSubmission = async (status, executionData) => {
+  const recordSubmission = async (status, executionData) => {
     try {
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) return;
@@ -205,7 +182,7 @@ export default function Workspace({ problem }) {
         .insert([{
           user_id: user.id,
           problem_id: problem.id,
-          status: status, // This will be "Accepted", "Wrong Answer", etc.
+          status: status, 
           code: codeCache[language],
           language: language,
           execution_time: executionData?.cpuTime || 0,
@@ -253,7 +230,6 @@ export default function Workspace({ problem }) {
           }
         }
 
-        // ✨ RECORD TO SUBMISSIONS TABLE
         await recordSubmission(allPassed ? "Accepted" : "Wrong Answer", data);
 
       } else {
@@ -326,6 +302,37 @@ export default function Workspace({ problem }) {
       }
     } catch { 
       setAiHint("Connection failed during analysis."); 
+      setAiFlowStatus('result');
+    }
+  };
+
+  // ✨ NEW: PROACTIVE HELP ACTION (Triggered by the popup)
+  const handleProactiveHelp = async () => {
+    setShowProactiveHelp(false);
+    setAiFlowStatus('loading');
+    setAiHint('');
+
+    const proactivePrompt = "I haven't typed anything in a while and I might be stuck. Act as a Step-by-Step Advisor. Look at my exact code and: 1. Give me a VERY SMALL snippet of code for the immediate next logical step. 2. Explain why. 3. Suggest what I should do after. DO NOT solve the whole problem.";
+
+    try {
+      const response = await fetch(`${API_BASE}/api/ai-help`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 
+          problemTitle: problem.title, 
+          problemDescription: formattedDescription,
+          userCode: codeCache[language], 
+          language: language,
+          userPrompt: proactivePrompt 
+        })
+      });
+      const data = await response.json();
+      if (response.ok) {
+        setAiHint(data.suggestion);
+        setAiFlowStatus('result');
+      }
+    } catch {
+      setAiHint("Failed to connect to AI Mentor.");
       setAiFlowStatus('result');
     }
   };
@@ -435,6 +442,19 @@ export default function Workspace({ problem }) {
               onChange={(val) => setCodeCache(prev => ({ ...prev, [language]: val }))}
               options={{ minimap: { enabled: false }, fontSize: 14, padding: { top: 20 }, automaticLayout: true, scrollBeyondLastLine: false }}
             />
+
+            {/* ✨ FLOATING PROACTIVE POPUP */}
+            {showProactiveHelp && (
+              <div className="absolute bottom-8 right-8 z-50 animate-bounce">
+                <button 
+                  onClick={handleProactiveHelp}
+                  className="bg-indigo-600 border-2 border-indigo-400 text-white px-6 py-3 rounded-full shadow-2xl font-bold text-sm flex items-center gap-2 hover:bg-indigo-500 transition-all"
+                >
+                  <span className="text-xl">🤖</span> 
+                  Looks like you're stuck. Need a hint?
+                </button>
+              </div>
+            )}
           </div>
 
           <div 
